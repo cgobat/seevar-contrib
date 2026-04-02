@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 Filename: core/preflight/vsx_catalog.py
-Version: 2.0.1
+Version: 2.1.0
 Objective: Fetch magnitude ranges from AAVSO VSX for all campaign targets.
-           Populates data/vsx_catalog.json — consumed by exposure_planner.
+           Populates data/vsx_catalog.json incrementally to survive reboots.
 """
 
 import json
@@ -119,18 +119,21 @@ def update_vsx_catalog(force_refresh: bool = False):
             cache[name] = parsed
             updated += 1
             log.debug("  -> %s", parsed)
+            
+            # Incremental save: Persist to disk immediately after successful parse
+            out = {
+                "#objective": "AAVSO VSX magnitude ranges for dynamic exposure planning.",
+                "stars": cache,
+            }
+            with open(VSX_CACHE, "w") as f:
+                json.dump(out, f, indent=4)
+                
         else:
             log.warning("  -> No VSX match.")
 
         time.sleep(POLL_DELAY_S)
 
     if updated > 0 or force_refresh:
-        out = {
-            "#objective": "AAVSO VSX magnitude ranges for dynamic exposure planning.",
-            "stars": cache,
-        }
-        with open(VSX_CACHE, "w") as f:
-            json.dump(out, f, indent=4)
         log.info("✅ VSX Catalog updated. %d new records.", updated)
     else:
         log.info("✅ VSX Catalog up to date. No API calls made.")

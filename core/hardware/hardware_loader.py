@@ -22,7 +22,7 @@ MODELS_DIR   = PROJECT_ROOT / "core" / "hardware" / "models"
 CONFIG_PATH  = PROJECT_ROOT / "config.toml"
 
 ALPACA_DISCOVERY_PORT = 32227
-ALPACA_DISCOVERY_MSG  = b"alpacadiscovery1"
+ALPACA_DISCOVERY_MSG  = bytes.fromhex("616c70616361646973636f7665727931")
 ALPACA_CLIENT_PARAMS  = {"ClientID": 1, "ClientTransactionID": 42}
 
 
@@ -73,7 +73,7 @@ def discover_seestar(timeout: float = 3.0) -> list:
 # STEP 2 — HTTP ALPACA FINGERPRINT
 # =============================================================================
 
-def get_sensor_fingerprint(ip: str, port: int = 4700) -> dict:
+def get_sensor_fingerprint(ip: str, port: int = 32323) -> dict:
     """
     Identify Seestar model via Alpaca HTTP API.
     Primary: cameraxsize (sensor width)

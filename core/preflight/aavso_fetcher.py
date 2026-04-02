@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 Filename: core/preflight/aavso_fetcher.py
-Version: 1.6.1
-Objective: Step 1 - Haul scientific targets from AAVSO Target Tool API and append strict CADENCE.md sampling rules.
+Version: 1.6.8
+Objective: Haul AAVSO targets with nested dictionary support and strict error-message reporting.
 """
 
 import json
@@ -30,81 +30,118 @@ def get_aavso_key():
     try:
         with open(CONFIG_PATH, "rb") as f:
             cfg = tomllib.load(f)
-        return cfg.get("aavso", {}).get("target_key")
+        key = cfg.get("aavso", {}).get("target_key")
+        if not key or key == "":
+            logger.error("❌ target_key is empty in config.toml")
+            sys.exit(1)
+        return key
     except Exception:
-        logger.error("❌ Failed to read target_key from config.toml")
+        logger.error("❌ Could not find [aavso] target_key in config.toml")
         sys.exit(1)
 
 def haul_and_filter(api_key):
-    logger.info("📡 STEP 1: Connecting to AAVSO Target API...")
-    url = f"https://filter.aavso.org/api/v1/targets?apikey={api_key}&obs_section=all"
+    endpoints = [
+        "https://targettool.aavso.org/TargetTool/api/v1/targets",
+        "https://filtergraph.com/aavso/api/v1/targets"
+    ]
     
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        raw_targets = response.json()
-        logger.info(f"📥 Retrieved {len(raw_targets)} raw targets.")
-
-        targets = []
-        for t in raw_targets:
-            try:
-                mag = float(t.get('max_mag', 0))
-            except (ValueError, TypeError):
-                continue
-                
-            if mag > MAG_LIMIT:
-                continue
-                
-            if float(t.get('dec', -90)) < MIN_DEC:
-                continue
-
-            var_type = str(t.get('type', '')).upper()
+    raw_data = None
+    
+    for url in endpoints:
+        logger.info(f"📡 Attempting connection to: {url}")
+        try:
+            response = requests.get(
+                url, 
+                auth=(api_key, "api_token"), 
+                params={"obs_section": "all"}, 
+                timeout=20
+            )
             
-            # Match DAILY_TYPES from ledger_manager.py
-            if any(x in var_type for x in ['CV', 'UG', 'UGSS', 'RR', 'NA', 'NB', 'NC', 'NR', 'ZAND']):
-                rec_cadence = 1
+            if response.status_code == 200:
+                raw_data = response.json()
+                break
             else:
-                rec_cadence = 3
+                logger.warning(f"⚠️ Server returned {response.status_code} at {url}")
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Connection failed to {url}: {e}")
+            continue
 
-            targets.append({
-                "name": t['name'],
-                "ra": float(t['ra']),
-                "dec": float(t['dec']),
-                "type": var_type,
-                "max_mag": mag,
-                "recommended_cadence_days": rec_cadence,
-                "priority": 2,
-                "duration": 600
-            })
-
-        seen = {}
-        for t in targets:
-            canon = re.sub(r' V0+(\d)', r'V \1', t['name'])
-            t['name'] = canon
-            seen[canon] = t
-            
-        targets = list(seen.values())
-        logger.info(f"  → After dedup + name normalisation: {len(targets)} unique targets")
-
-        output_data = {
-            "#objective": "Master haul of AAVSO targets filtered by local horizon and assigned CADENCE.md rules.",
-            "metadata": {
-                "generated": datetime.now().isoformat(),
-                "schema_version": "2026.1",
-                "source": "AAVSO Target Tool API",
-                "target_count": len(targets)
-            },
-            "targets": targets
-        }
-
-        with open(MASTER_HAUL_FILE, "w") as f:
-            json.dump(output_data, f, indent=4)
-
-        logger.info(f"✅ Target Base Secured: {len(targets)} scientifically observable targets locked.")
-
-    except Exception as e:
-        logger.error(f"❌ Failed to fetch or filter targets: {e}")
+    if raw_data is None:
+        logger.error("❌ All AAVSO endpoints failed to return a valid 200 OK response.")
         sys.exit(1)
+
+    # Handle dictionary responses (either a single target, a nested list, or an error message)
+    if isinstance(raw_data, dict):
+        if 'star_name' in raw_data or 'name' in raw_data: 
+            target_list = [raw_data]
+        elif 'targets' in raw_data and isinstance(raw_data['targets'], list):
+            target_list = raw_data['targets']
+        else:
+            logger.error(f"❌ API returned an unexpected dictionary (likely an error message):\n{json.dumps(raw_data, indent=2)}")
+            sys.exit(1)
+    elif isinstance(raw_data, list):
+        target_list = raw_data
+    else:
+        logger.error(f"❌ Unexpected data format received: {type(raw_data)}")
+        sys.exit(1)
+
+    logger.info(f"📥 Processing {len(target_list)} raw entries...")
+
+    targets_dict = {}
+    
+    for t in target_list:
+        if not isinstance(t, dict):
+            continue
+            
+        target_name = t.get('star_name') or t.get('name')
+        if not target_name:
+            continue
+
+        try:
+            mag = float(t.get('max_mag', 0))
+            if mag > MAG_LIMIT or float(t.get('dec', -90)) < MIN_DEC:
+                continue
+
+            var_type = str(t.get('var_type', '')).upper()
+            
+            rec_cadence = 1 if any(x in var_type for x in ['CV', 'UG', 'RR', 'NA', 'ZAND', 'NL']) else 3
+
+            canon_name = re.sub(r' V0+(\d)', r'V \1', str(target_name))
+            
+            if canon_name not in targets_dict or mag < targets_dict[canon_name]['max_mag']:
+                targets_dict[canon_name] = {
+                    "name": canon_name,
+                    "ra": float(t.get('ra', 0)),
+                    "dec": float(t.get('dec', 0)),
+                    "type": var_type,
+                    "max_mag": mag,
+                    "recommended_cadence_days": rec_cadence,
+                    "priority": 2,
+                    "duration": 600
+                }
+        except (ValueError, TypeError):
+            continue
+
+    final_targets = list(targets_dict.values())
+
+    if not final_targets:
+        logger.error("❌ No valid targets remained after filtering.")
+        sys.exit(1)
+
+    output_data = {
+        "metadata": {
+            "generated": datetime.now().isoformat(),
+            "source": "AAVSO Target Tool API",
+            "target_count": len(final_targets)
+        },
+        "targets": final_targets
+    }
+
+    with open(MASTER_HAUL_FILE, "w") as f:
+        json.dump(output_data, f, indent=4)
+
+    logger.info(f"✅ Success: {len(final_targets)} unique targets saved to {MASTER_HAUL_FILE}")
 
 if __name__ == "__main__":
     key = get_aavso_key()
