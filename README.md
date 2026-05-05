@@ -248,6 +248,18 @@ min_alt  = 70.0
 Wrap-around sectors are supported, for example `az_start = 330` and
 `az_end = 20`.
 
+For manual cleanup of `data/horizon_mask.json`, run the local Flask editor:
+
+```bash
+cd ~/seevar
+/home/ed/seevar/.venv/bin/python dev/tools/horizon_profile_editor.py \
+  --host 0.0.0.0 \
+  --port 5060
+```
+
+Open `http://<pi-address>:5060/`. The editor writes timestamped backups before
+saving and can export a simple `horizon.txt` for inspection.
+
 If postflight appears stuck on a bad field, check `logs/accountant.log`.
 Plate solving is capped by `[postflight]`:
 
